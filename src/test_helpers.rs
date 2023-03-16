@@ -97,6 +97,7 @@ pub fn test_default_workload() -> Workload {
         name: "".to_string(),
         namespace: "".to_string(),
         trust_domain: "cluster.local".to_string(),
+        network: "".to_string(),
         service_account: "default".to_string(),
         workload_name: "".to_string(),
         workload_type: "deployment".to_string(),
@@ -108,6 +109,7 @@ pub fn test_default_workload() -> Workload {
 
         authorization_policies: Vec::new(),
         native_hbone: false,
+        uid: "fakeuid".to_string(),
     }
 }
 

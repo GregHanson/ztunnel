@@ -76,6 +76,10 @@ message Workload {
 
   // The cluster ID that the workload instance belongs to
   string cluster_id = 18;
+
+  // UID from k8s parent resource (pod/workload entry etc). This is used to differentiate
+  // between workloads that share the same IP.
+  string uid = 19;
 }
 
 enum WorkloadStatus {
