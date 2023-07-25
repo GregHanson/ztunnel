@@ -18,7 +18,7 @@ use trust_dns_resolver::error::ResolveError;
 use trust_dns_resolver::{TokioAsyncResolver, TokioHandle};
 use trust_dns_server::authority::LookupError;
 use trust_dns_server::server::Request;
-
+use log::debug;
 /// A forwarding [Resolver] that delegates requests to an upstream [TokioAsyncResolver].
 pub struct Forwarder(TokioAsyncResolver);
 
@@ -34,6 +34,7 @@ impl Forwarder {
 impl Resolver for Forwarder {
     async fn lookup(&self, request: &Request) -> Result<Answer, LookupError> {
         // TODO(nmittler): Should we allow requests to the upstream resolver to be authoritative?
+        debug!("gihanson forwarder.lookup");
         let name = request.query().name();
         let rr_type = request.query().query_type();
         self.0

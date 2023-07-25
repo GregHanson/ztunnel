@@ -14,7 +14,7 @@
 
 use crate::dns::resolver::{Answer, Resolver};
 use std::sync::Arc;
-use tracing::{error, warn};
+use tracing::{debug, error, warn};
 use trust_dns_proto::op::{Edns, Header, MessageType, OpCode, ResponseCode};
 use trust_dns_proto::rr::Record;
 use trust_dns_resolver::error::ResolveErrorKind;
@@ -43,6 +43,7 @@ impl Handler {
         request: &Request,
         response_handle: R,
     ) -> ResponseInfo {
+        debug!(component="dns", "gihanson proxy lookup");
         match self.resolver.lookup(request).await {
             Ok(answer) => send_lookup(request, response_handle, answer).await,
             Err(e) => send_lookup_error(request, response_handle, e).await,
@@ -79,7 +80,7 @@ async fn send_lookup<R: ResponseHandler>(
     answer: Answer,
 ) -> ResponseInfo {
     let mut response_header = Header::response_from_request(request.header());
-
+    debug!("gihanson send_lookup");
     // We are the authority here, since we control DNS for known hostnames
     response_header.set_authoritative(answer.is_authoritative());
     response_header.set_recursion_available(true);
@@ -110,6 +111,7 @@ async fn send_lookup_error<R: ResponseHandler>(
     response_handle: R,
     e: LookupError,
 ) -> ResponseInfo {
+    debug!("gihanson send_lookup_error");
     match e {
         LookupError::NameExists => {
             // This is an error, since the hostname was resolved. Just return no records.
@@ -124,12 +126,14 @@ async fn send_lookup_error<R: ResponseHandler>(
                 }
                 _ => {
                     // TODO(nmittler): log?
+                    debug!("gihanson send_lookup_error unknown lookup error: {}", e.kind());
                     send_error(request, response_handle, ResponseCode::ServFail).await
                 }
             }
         }
         LookupError::Io(_) => {
             // TODO(nmittler): log?
+            debug!("gihanson send_lookup_error lookup error");
             send_error(request, response_handle, ResponseCode::ServFail).await
         }
         _ => send_error(request, response_handle, ResponseCode::ServFail).await,
@@ -171,7 +175,7 @@ async fn send_response<'a, R: ResponseHandler>(
     mut response_handle: R,
 ) -> ResponseInfo {
     let result = response_handle.send_response(response).await;
-
+    debug!("gihanson send_response");
     match result {
         Err(e) => {
             error!("request error: {}", e);

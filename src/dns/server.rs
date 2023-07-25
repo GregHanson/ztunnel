@@ -24,7 +24,7 @@ use once_cell::sync::Lazy;
 use rand::seq::SliceRandom;
 use rand::thread_rng;
 use tokio::net::{TcpListener, UdpSocket};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 use trust_dns_proto::error::ProtoErrorKind;
 use trust_dns_proto::op::ResponseCode;
 use trust_dns_proto::rr::{Name, RData, Record, RecordType};
@@ -290,6 +290,7 @@ impl Store {
 
         // Iterate over all possible aliases for the requested hostname from the perspective of
         // the client (e.g. <svc>, <svc>.<ns>, <svc>.<ns>.svc, <svc>.<ns>.svc.cluster.local).
+        debug!("gihanson find_server for name:{}", requested_name);
         for alias in self.get_aliases(client, requested_name) {
             // For each alias, try matching against all possible wildcards.
             //
@@ -299,6 +300,7 @@ impl Store {
             //   'www.example.com' (the alias, itself)
             //   '*.example.com'
             //   '*.com'
+            debug!("gihanson find_server for alias:{}", alias.name);
             for mut search_name in get_wildcards(&alias.name) {
                 // Convert the name to a string for lookup, removing the trailing '.'.
                 search_name.set_fqdn(false);
@@ -318,7 +320,10 @@ impl Store {
                         .cloned()
                         // Should never be empty, since we delete the Vec when it's empty.
                         .unwrap();
-
+                    debug!(
+                        "gihanson find_server found service for search name:{}",
+                        search_name_str
+                    );
                     return Some(ServerMatch {
                         server: Address::Service(Box::new(service)),
                         name: search_name,
@@ -327,11 +332,20 @@ impl Store {
                 } else {
                     // Didn't find a service, try a workload.
                     if let Some(wl) = state.workloads.find_hostname(&search_name_str) {
+                        debug!(
+                            "gihanson find_server found workload for search name:{}",
+                            search_name_str
+                        );
                         return Some(ServerMatch {
                             server: Address::Workload(Box::new(wl)),
                             name: search_name,
                             alias,
                         });
+                    } else {
+                        debug!(
+                            "gihanson find_server no workload for search name:{}",
+                            search_name_str
+                        );
                     }
                 }
             }
@@ -353,8 +367,10 @@ impl Store {
                 .iter()
                 .filter_map(|addr| {
                     if is_record_type(addr, record_type) {
+                        debug!("gihanson: workload found: {}", addr.to_string());
                         Some(*addr)
                     } else {
+                        debug!("gihanson: workload record type mismatch: {}", record_type);
                         None
                     }
                 })
@@ -362,6 +378,7 @@ impl Store {
             Address::Service(service) => {
                 if service.vips.is_empty() {
                     // Headless service. Use the endpoint IPs.
+                    debug!("gihanson: headless service");
                     service
                         .endpoints
                         .iter()
@@ -370,8 +387,10 @@ impl Store {
                                 return None
                             };
                             if is_record_type(&addr.address, record_type) {
+                                debug!("gihanson: service found: {}", addr.address.to_string());
                                 Some(addr.address)
                             } else {
+                                debug!("gihanson: service record type mismatch: {}", record_type);
                                 None
                             }
                         })
@@ -379,6 +398,7 @@ impl Store {
                 } else {
                     // "Normal" service with VIPs.
                     // Add service VIPs that are callable from the client.
+                    debug!("gihanson: normal service");
                     service
                         .vips
                         .iter()
@@ -386,8 +406,13 @@ impl Store {
                             if is_record_type(&vip.address, record_type)
                                 && client.network == vip.network
                             {
+                                debug!("gihanson: service found: {}", vip.address.to_string());
                                 Some(vip.address)
                             } else {
+                                debug!(
+                                    "gihanson: service mismatch: rtype:{} cnetwork:{} vnetwork:{}",
+                                    record_type, client.network, vip.network
+                                );
                                 None
                             }
                         })
@@ -420,6 +445,7 @@ impl Store {
             source: client,
         });
 
+        debug!("gihanson dns forward begin");
         // Record the forwarded request duration when the function exits.
         let start = std::time::Instant::now();
         let _forwarded_duration = self.metrics.defer_record(|metrics| {
@@ -460,15 +486,19 @@ impl Resolver for Store {
                     source: None,
                     destination: None,
                 });
-
+                warn!(
+                    ": lookup client not found for src:{}",
+                    to_canonical(request.src())
+                );
                 return Err(LookupError::ResponseCode(ResponseCode::ServFail));
             }
             Some(client) => client,
         };
-
+        debug!("gihanson: lookup client src:{}", client.canonical_name);
         // Make sure the request is for IP records. Anything else, we forward.
         let record_type = request.query().query_type();
         if !is_record_type_supported(record_type) {
+            debug!("gihanson: unsupported record type: {}", record_type);
             return self.forward(Some(&client), request).await;
         }
 
@@ -476,6 +506,7 @@ impl Resolver for Store {
         let requested_name = Name::from(request.query().name().clone());
         let Some(service_match) = self.find_server(&client, &requested_name) else {
             // Unknown host. Forward to the upstream resolver.
+            debug!("gihanson: unknown host forwarding upstream: {}", requested_name);
             return self.forward(Some(&client), request).await;
         };
 
@@ -495,6 +526,7 @@ impl Resolver for Store {
         if addresses.is_empty() {
             // Lookup succeeded, but no records were returned. This is not NXDOMAIN, since we
             // found the host. Just return an empty set of records.
+            debug!("gihanson: no addresses found");
             return Ok(Answer::new(Vec::default(), is_authoritative));
         }
 
@@ -535,7 +567,7 @@ impl Resolver for Store {
 
         // Add the IP records.
         ip_records(ip_record_name, addresses, &mut records);
-
+        debug!("gihanson: lookup succeeded");
         Ok(Answer::new(records, is_authoritative))
     }
 }
@@ -672,6 +704,13 @@ impl SystemForwarder {
         let search_domains = cfg.search().to_vec();
         let name_servers = cfg.name_servers().to_vec();
 
+        warn!(
+            "gihanson SystemForwarded domain:{} search:{:?} servers:{:?}",
+            domain.clone().unwrap_or_default(),
+            search_domains,
+            name_servers
+        );
+
         // Remove the search list before passing to the resolver. The local resolver that
         // sends the original request will already have search domains applied. We want
         // this resolver to simply use the request host rather than re-adding search domains.
@@ -700,6 +739,7 @@ impl Forwarder for SystemForwarder {
         _: Option<&Workload>,
         request: &Request,
     ) -> Result<Answer, LookupError> {
+        debug!("gihanson system forwarder lookup");
         self.resolver.lookup(request).await
     }
 }
